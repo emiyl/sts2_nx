@@ -26,7 +26,7 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 
-SKIP = {"bin", "obj", ".git"}
+SKIP = {"bin", "obj", ".git", "apk"}
 
 
 def main() -> int:
@@ -38,7 +38,7 @@ def main() -> int:
     files = sorted({f for p in patterns for f in root.rglob(p)})
 
     for f in files:
-        if SKIP & set(f.parts):
+        if SKIP & set(f.parts) or any(part.endswith("-apk") for part in f.parts):
             continue
         checked += 1
         text = f.read_text(errors="replace")

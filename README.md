@@ -51,15 +51,17 @@ this turns your copy into the file the port needs.
 need one file out of it. If you have the `.apk`, rename it to `.zip` and
 extract it like any other zip — Windows will do this from the right-click menu.
  
-**3. Docker Desktop.** Free, from <https://www.docker.com/products/docker-desktop/>.
+**3. macOS build tools.** Install [Homebrew](https://brew.sh) if needed, then
+install Lima and QEMU:
+
+```sh
+brew install lima qemu
+```
+
+The build script starts an x86_64 Ubuntu VM with Lima and installs the pinned
+.NET SDK and Android NDK in that VM on the first run. Docker is not required.
  
-Install it and **restart your PC when it asks**. Open Docker Desktop once and
-wait until it says *Engine running* in the bottom-left corner. Leave it open
-while you work. If it asks to install WSL2, say yes and let it finish.
- 
-**4. This project's folder**, unzipped somewhere without spaces in the path.
-`C:\devkitPro\sts2_nx` is a good choice. `C:\Users\Your Name\Desktop\sts2 nx`
-is not — the space will break the build in a confusing way.
+**4. This project's folder** on your Mac.
  
 ---
  
@@ -82,16 +84,17 @@ Keep both paths handy. Spaces in these are fine.
  
 ## Step 2 — Collect the game's code files
  
-Open **PowerShell** (press Start, type `powershell`, press Enter) and run these
-two lines, replacing the paths with your own:
- 
-```powershell
-cd C:\devkitPro\sts2_nx
- 
-.\scripts\collect-assemblies.ps1 -SteamDir "C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2" -ApkDir "C:\Users\You\Downloads\sts2-apk"
+Install PowerShell if needed (`brew install powershell`), then collect the
+assemblies from your Steam install and extracted APK. Replace the paths with
+yours:
+
+```sh
+pwsh ./scripts/collect-assemblies.ps1 \
+  -SteamDir "$HOME/Library/Application Support/Steam/steamapps/common/Slay the Spire 2" \
+  -ApkDir "$HOME/Downloads/sts2-apk"
 ```
  
-Keep the quotes around the paths — they are what make spaces work.
+Keep the quotes around the paths — they allow spaces in directory names.
  
 This gathers about 200 files into `aot\assemblies-raw`. It takes a few seconds.
  
@@ -105,33 +108,27 @@ folder actually exists in Explorer.
  
 ---
  
-## Step 3 — Build the Docker image
- 
-Still in PowerShell, in the same folder:
- 
-```powershell
-docker build -f scripts/Dockerfile.aot -t sts2nx-aot .
+## Step 3 — Install the build toolchain
+
+The Lima VM uses the exact .NET SDK and NDK versions that produced the
+verified payload. It sets up the toolchain automatically and reuses it on later
+builds. On Apple silicon it uses Lima's ARM64 Linux VM and Rosetta to run the
+pinned x86_64 .NET and NDK tools.
+
+## Step 4 — Build `libsts2.so` without Docker
+
+```sh
+bash scripts/build.sh aot
 ```
+
+Run this from the project directory on your Mac. On the first run, Lima creates
+the Linux VM and downloads the toolchain. It then weaves the patches, filters
+the AOT inputs, compiles the payload, verifies the ARM64 shared library and
+places `libsts2.so` in `dist/`. To build the NRO and assemble the rest of the SD
+layout as well, install devkitPro and run `bash scripts/build.sh all`.
  
-The first time, this downloads about 2 GB and takes 5–15 minutes depending on
-your connection. Later runs take seconds.
- 
-**Run this every time**, even when nothing seems to have changed. It copies the
-project files into the image, so skipping it silently builds the old version and
-you get a file that looks fine and is not.
- 
----
- 
-## Step 4 — Build `libsts2.so`
- 
-```powershell
-docker run --rm -it -v "C:\devkitPro\sts2_nx\aot\assemblies-raw:/in:ro" -v "C:\devkitPro\sts2_nx\dist:/out" sts2nx-aot
-```
- 
-That is one long line — copy it whole. If your project is somewhere other than
-`C:\devkitPro\sts2_nx`, change **both** paths.
- 
-This takes 15–30 minutes. Text will scroll past continuously; that is normal.
+The first build downloads .NET dependencies and takes a while; text will scroll
+past continuously.
  
 **You want to see this at the end:**
  
@@ -149,7 +146,7 @@ applied 36, skipped 0, failed 0
 The finished file is at:
  
 ```
-C:\devkitPro\sts2_nx\dist\libsts2.so
+dist/libsts2.so
 ```
  
 Copy it to your SD card, next to `sts2.nro`:
@@ -168,7 +165,8 @@ file and skip it. This will take 20-30 minutes.
 
 ## Building
 
-**The NRO** needs devkitPro with the `switch-dev` group plus these portlibs:
+**The NRO** (optional when only building `libsts2.so`) needs devkitPro with the
+`switch-dev` group plus these portlibs:
 
 ```
 pacman -S switch-dev

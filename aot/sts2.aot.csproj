@@ -7,6 +7,7 @@
 
   <PropertyGroup>
     <OutputType>Library</OutputType>
+    <GeneratedRdXmlPath Condition="'$(GeneratedRdXmlPath)' == ''">$(MSBuildThisFileDirectory)rd.generated.xml</GeneratedRdXmlPath>
 
     <!-- Produce a SHARED LIBRARY, not an executable.
          Without this, PublishAot emits a native executable with a main()

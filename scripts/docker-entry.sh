@@ -35,7 +35,7 @@ fi
 
 IN="${IN:-/in}"
 OUT="${OUT:-/out}"
-ROOT=/src
+ROOT="${PROJECT_ROOT:-/src}"
 
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -166,8 +166,9 @@ fi
 # pack, and so has to be named explicitly.
 say "selecting AOT inputs"
 
-REFPACK="$(ls -d /usr/share/dotnet/packs/Microsoft.NETCore.App.Ref/*/ref/net*/ 2>/dev/null | tail -1)"
-[ -n "$REFPACK" ] || die "could not locate the Microsoft.NETCore.App reference pack"
+DOTNET_ROOT="${DOTNET_ROOT:-$(dirname "$(readlink -f "$(command -v dotnet)")")}"
+REFPACK="$(ls -d "$DOTNET_ROOT"/packs/Microsoft.NETCore.App.Ref/*/ref/net*/ 2>/dev/null | tail -1)"
+[ -n "$REFPACK" ] || die "could not locate the Microsoft.NETCore.App reference pack under $DOTNET_ROOT"
 echo "  framework list: $REFPACK"
 
 rm -rf "$WORK/refs"; mkdir -p "$WORK/refs"
@@ -248,7 +249,7 @@ say "generating assembly roots"
 # casualty.
 say_roots() { echo "  $1"; }
 
-GEN="$ROOT/aot/rd.generated.xml"
+GEN="${AOT_RD_XML:-$ROOT/aot/rd.generated.xml}"
 {
   echo '<Directives xmlns="http://schemas.microsoft.com/netfx/2013/01/metadata">'
   echo '  <Application>'
@@ -294,7 +295,8 @@ say "NativeAOT compile"
 
 dotnet publish "$ROOT/aot/sts2.aot.csproj" -c Release \
   -r linux-bionic-arm64 --self-contained --nologo \
-  -p:AotReferenceDir="$WORK/refs"
+  -p:AotReferenceDir="$WORK/refs" \
+  -p:GeneratedRdXmlPath="$GEN"
 
 # The shim is sts2_aot_root, so the emitted library is named after it, not
 # after the game. Match on any .so under publish/ rather than a fixed name.

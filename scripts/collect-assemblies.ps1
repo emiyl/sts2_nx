@@ -10,10 +10,8 @@
 # mismatch shows up as missing methods at runtime rather than a clean load
 # error. This script overwrites Steam's copy with the launcher's on purpose.
 #
-# -Out defaults to a path inside the repo, deliberately: Docker volume mounts
-# and paths containing spaces do not mix well, and game install directories
-# usually contain spaces. Reading from a spaced path is fine (PowerShell
-# quotes it); handing one to `docker run -v` is where it breaks.
+# -Out defaults to a path inside the repo so the build script can consume it
+# directly.
 
 param(
   # Optional. Left out, the script finds the install itself -- see
@@ -39,7 +37,6 @@ $OutFull = (Resolve-Path $Out).Path
 
 if ($OutFull -match ' ') {
   Warn "The output path contains a space: $OutFull"
-  Warn "Docker volume mounts will likely fail. Move the repo somewhere without spaces."
 }
 
 # --- 1. locate the assemblies -----------------------------------------------
@@ -174,5 +171,4 @@ if ($store -ne "" -and (Test-Path $store)) {
 
 # --- 4. next ------------------------------------------------------------------
 Say "ready"
-Write-Host "   docker build -f scripts\Dockerfile.aot -t sts2nx-aot ."
-Write-Host "   docker run --rm -v ""${OutFull}:/in:ro"" -v ""$((Get-Location).Path)\dist:/out"" sts2nx-aot"
+Write-Host "   Build the payload with: bash scripts/build.sh aot"

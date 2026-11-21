@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build.sh -- end-to-end.
+# build.sh -- end-to-end
 #
 #   1. weave the patch set into the game assemblies (Mono.Cecil)
 #   2. NativeAOT-compile them to libsts2.so (ILC)
@@ -25,6 +25,7 @@ say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 need_dir() { [ -d "$1" ] || die "$2"; }
+check_xml() { python3 "$ROOT/tools/xml_check.py" "$ROOT"; }
 
 # ---------------------------------------------------------------- 1. weave --
 do_weave() {
@@ -70,41 +71,116 @@ GAME_ASSEMBLIES at them."
 }
 
 # ------------------------------------------------------------------ 2. aot --
-do_aot() {
+do_aot_linux() {
   say "NativeAOT compile"
   check_xml
-  need_dir "$PATCHED" "no patched assemblies -- run './build.sh weave' first"
-
-  command -v clang >/dev/null || die "clang not on PATH.
-ILC needs the Android NDK's clang for the final native link:
-  export PATH=\"\$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:\$PATH\""
-
-  # linux-bionic-arm64, NOT linux-arm64. bionic gives a libc surface so_util
-  # and libc_shim can satisfy; the glibc-shaped RID does not, and its symbol
-  # list does not transfer (see nativeaot_shim.c).
-  dotnet publish "$ROOT/aot/sts2.aot.csproj" -c Release \
-    -r linux-bionic-arm64 --self-contained \
-    -p:PatchedAssemblyDir="$PATCHED"
-
-  local so
-  so="$(find "$ROOT/aot/bin" -name '*.so' -path '*publish*' | head -1)"
-  [ -n "$so" ] || die "ILC produced no .so -- check the publish output above"
-  echo "ILC output: $so"
-
-  # Scan the payload's imports against the wrapper's table. Run 3 lost a
-  # hardware cycle to 26 unresolved imports in exactly this file, because the
-  # gap analysis had only ever been pointed at the APK. ILC's import set
-  # changes with the code it compiles, so this belongs in the build, not in a
-  # one-off investigation.
-  if [ -d "$APK_DIR" ]; then
-    say "checking payload imports"
-    AOT_PAYLOAD="$so" python3 "$ROOT/tools/import_gap.py" "$APK_DIR" \
-      | sed -n '/AOT payload/,$p' || true
-    echo
-    echo "Anything listed above under [other] or [bionic-isms] needs an entry"
-    echo "in imports.c before this will run. so_resolve taints what it cannot"
-    echo "resolve, so a missing one is a Data Abort, not a link error."
+  [ "$(uname -s)" = Linux ] || die "NativeAOT build requires Linux; use the Lima VM on macOS."
+  if [ "$(uname -m)" != x86_64 ] && [ "${STS2_ROSETTA:-0}" != 1 ]; then
+    die "NativeAOT requires Linux x86_64 or an ARM64 Lima VM with Rosetta enabled."
   fi
+  command -v dotnet >/dev/null || die ".NET SDK 9.0.317 not found on PATH"
+  local sdk_version
+  sdk_version="$(dotnet --version)"
+  [ "$sdk_version" = 9.0.317 ] || die "this payload is pinned to .NET SDK 9.0.317 (found $sdk_version)."
+  [ -n "${ANDROID_NDK:-}" ] || die "ANDROID_NDK is not set; point it at Android NDK r27c."
+  [ -f "$ANDROID_NDK/source.properties" ] || die "ANDROID_NDK does not look like an extracted NDK: $ANDROID_NDK"
+  grep -q 'Pkg.Revision = 27.2.12479018' "$ANDROID_NDK/source.properties" || die "this build is pinned to Android NDK r27c (27.2.12479018)."
+  local ndk_bin="$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+  [ -x "$ndk_bin/clang" ] || die "NDK clang not found at $ndk_bin/clang"
+  export PATH="$ndk_bin:$PATH"
+
+  need_dir "$RAW" "no game assemblies at $RAW; extract them first (see aot/README.md)."
+  mkdir -p "$OUT"
+  local gen
+  gen="$(mktemp "${TMPDIR:-/tmp}/sts2nx-rd.XXXXXX")"
+  trap 'rm -f "${gen:-}"' EXIT
+  IN="$RAW" OUT="$OUT" PROJECT_ROOT="$ROOT" AOT_RD_XML="$gen" \
+    bash "$ROOT/scripts/docker-entry.sh"
+}
+
+do_aot_macos() {
+  local vm=sts2nx-build
+  command -v limactl >/dev/null || die "Lima is required on macOS. Install it with: brew install lima lima-additional-guestagents"
+
+  if [ -d "$HOME/.lima/$vm" ]; then
+    limactl start "$vm"
+  else
+    say "creating Linux build VM with Lima"
+    limactl start --name="$vm" --vm-type=vz --arch=aarch64 --rosetta \
+      --cpus=8 --memory=16 --disk=100 \
+      --mount-only "$ROOT:w" template:ubuntu-24.04
+  fi
+
+  say "preparing pinned Linux AOT toolchain"
+  limactl shell "$vm" bash -s -- "$ROOT" <<'LIMA_BUILD'
+set -euo pipefail
+PROJECT_ROOT="$1"
+DOTNET_ROOT="$HOME/.dotnet-x64"
+ANDROID_NDK="$HOME/android-ndk-r27c"
+if ! command -v curl >/dev/null || ! command -v unzip >/dev/null || ! command -v python3 >/dev/null; then
+  sudo apt-get update
+  sudo apt-get install -y ca-certificates curl unzip python3
+fi
+
+if ! dpkg --print-foreign-architectures | grep -qx amd64; then
+  sudo dpkg --add-architecture amd64
+fi
+sudo python3 - <<'PY'
+from pathlib import Path
+for path in Path('/etc/apt/sources.list.d').glob('*.sources'):
+    text = path.read_text()
+    if 'ports.ubuntu.com' in text:
+        text = text.replace('Types: deb\n', 'Types: deb\nArchitectures: arm64\n')
+        path.write_text(text)
+Path('/etc/apt/sources.list.d/amd64.sources').write_text('''Types: deb
+URIs: http://archive.ubuntu.com/ubuntu
+Suites: noble noble-updates noble-backports
+Components: main restricted universe multiverse
+Architectures: amd64
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: http://security.ubuntu.com/ubuntu
+Suites: noble-security
+Components: main restricted universe multiverse
+Architectures: amd64
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+''')
+PY
+sudo apt-get update
+sudo apt-get install -y libc6:amd64 libgcc-s1:amd64 libstdc++6:amd64 zlib1g:amd64 libicu74:amd64 libssl3:amd64
+
+if [ ! -x "$DOTNET_ROOT/dotnet" ]; then
+  mkdir -p "$DOTNET_ROOT"
+  curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
+  bash /tmp/dotnet-install.sh --version 9.0.317 --architecture x64 --install-dir "$DOTNET_ROOT"
+fi
+
+if [ ! -x "$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]; then
+  curl -fsSL https://dl.google.com/android/repository/android-ndk-r27c-linux.zip -o /tmp/android-ndk-r27c.zip
+  unzip -q /tmp/android-ndk-r27c.zip -d "$HOME"
+  rm /tmp/android-ndk-r27c.zip
+fi
+
+export DOTNET_ROOT ANDROID_NDK
+export PATH="$DOTNET_ROOT:$PATH"
+export STS2_ROSETTA=1
+bash "$PROJECT_ROOT/scripts/build.sh" aot
+LIMA_BUILD
+}
+
+do_aot() {
+  case "$(uname -s)" in
+    Linux)
+      do_aot_linux
+      ;;
+    Darwin)
+      do_aot_macos
+      ;;
+    *)
+      die "AOT build is supported on Linux x86_64 or macOS (through Lima)."
+      ;;
+  esac
 }
 
 # ------------------------------------------------------------------ 3. nro --
@@ -187,5 +263,5 @@ case "${1:-all}" in
   nro)   do_nro ;;
   stage) do_stage ;;
   all)   do_weave; do_aot; do_nro; do_stage ;;
-  *)     die "usage: build.sh [weave|aot|nro|stage]" ;;
+  *)     die "usage: scripts/build.sh [weave|aot|nro|stage]" ;;
 esac

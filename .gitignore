@@ -1,0 +1,10 @@
+build/
+dist/
+**/bin/
+**/obj/
+*.dll
+*.pdb
+*.cache
+*.elf
+*.nacp
+*.nro
